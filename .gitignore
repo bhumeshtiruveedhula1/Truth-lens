@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+venv/
+venv310/
+.env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Data (VERY IMPORTANT — don’t push raw sessions)
+data/sessions/
+data/windows/
+data/sequences.npz
+
+# Models (optional: keep best model only)
+models/*.pt
+!models/gru_refined_v3.pt
+
+# IDE
+.vscode/
+.idea/

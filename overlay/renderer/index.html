@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DeepShield</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ═══════════════════════════════════════════════════════
+       COMPACT BADGE (always visible)
+  ═══════════════════════════════════════════════════════ -->
+  <div id="badge-container" class="badge-container">
+
+    <!-- Animated shield icon -->
+    <div id="shield-icon" class="shield-icon low">
+      <div class="shield-pulse"></div>
+      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 2L3 6.5V12C3 16.418 7.03 20.524 12 22C16.97 20.524 21 16.418 21 12V6.5L12 2Z"
+              fill="currentColor" opacity="0.15"/>
+        <path d="M12 2L3 6.5V12C3 16.418 7.03 20.524 12 22C16.97 20.524 21 16.418 21 12V6.5L12 2Z"
+              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        <!-- Checkmark (shown in LOW state) -->
+        <path id="icon-check" class="icon-check" d="M8 12L10.5 14.5L16 9"
+              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <!-- Warning (shown in MEDIUM/HIGH state) -->
+        <text id="icon-exclaim" class="icon-exclaim hidden" x="12" y="15.5"
+              text-anchor="middle" font-size="9" font-weight="700" fill="currentColor">!</text>
+      </svg>
+    </div>
+
+    <!-- Score + label -->
+    <div class="badge-text">
+      <div class="badge-label">
+        <span id="risk-label" class="risk-label">VERIFIED</span>
+        <span class="brand-name">DeepShield</span>
+      </div>
+      <div class="score-row">
+        <span id="trust-score" class="trust-score">–––</span>
+        <span class="score-unit">trust</span>
+      </div>
+      <div id="status-text" class="status-text">Initializing...</div>
+    </div>
+
+    <!-- Debug toggle button -->
+    <button id="debug-toggle" class="debug-toggle" title="Toggle debug panel">
+      <svg viewBox="0 0 16 16" fill="currentColor">
+        <circle cx="8" cy="8" r="2"/>
+        <path d="M8 2a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0v-1A.5.5 0 0 1 8 2zM8 13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-1 0v-1A.5.5 0 0 1 8 13zM2 8a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1A.5.5 0 0 1 2 8zm10 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 0 1h-1A.5.5 0 0 1 12 8z"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Score bar -->
+  <div class="score-bar-track">
+    <div id="score-bar" class="score-bar"></div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════
+       DEBUG PANEL (expandable)
+  ═══════════════════════════════════════════════════════ -->
+  <div id="debug-panel" class="debug-panel hidden">
+    <div class="debug-header">
+      <span>Signal Intelligence</span>
+      <span id="session-id" class="session-id">session: –––</span>
+    </div>
+
+    <div class="signal-grid" id="signal-grid">
+      <!-- Populated dynamically by app.js -->
+    </div>
+
+    <!-- Sparkline chart -->
+    <div class="sparkline-label">Trust history (30s)</div>
+    <canvas id="sparkline" width="300" height="40"></canvas>
+
+    <!-- Phase 2 placeholders -->
+    <div class="phase2-row">
+      <div class="phase2-pill">
+        <span class="phase2-icon">♥</span>
+        <span>rPPG</span>
+        <span class="phase2-tag">Phase 2</span>
+      </div>
+      <div class="phase2-pill">
+        <span class="phase2-icon">🎤</span>
+        <span>Lip-sync</span>
+        <span class="phase2-tag">Phase 2</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════
+       ALERT MODAL (HIGH risk)
+  ═══════════════════════════════════════════════════════ -->
+  <div id="alert-modal" class="alert-modal hidden">
+    <div class="alert-inner">
+      <div class="alert-icon">⚠</div>
+      <div class="alert-title">DEEPFAKE DETECTED</div>
+      <div id="alert-reason" class="alert-reason">Analyzing...</div>
+      <div class="alert-signals" id="alert-signals"></div>
+      <div class="alert-footer">
+        <button id="alert-dismiss" class="alert-dismiss">Dismiss</button>
+        <span class="alert-countdown" id="alert-countdown"></span>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

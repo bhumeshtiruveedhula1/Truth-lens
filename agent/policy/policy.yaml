@@ -1,0 +1,29 @@
+# DeepShield Default Policy — Hackathon MVP
+# Edit this file to tune risk thresholds and alert behavior.
+# In Phase 2, this config is pushed from an enterprise policy server.
+
+version: "1.0"
+organization: "hackathon-demo"
+
+# Set to true for stricter enterprise mode (raises thresholds)
+paranoia_mode: false
+
+thresholds:
+  low_threshold: 0.80         # Trust score >= this -> GREEN (LOW risk)
+  medium_threshold: 0.55      # Trust score >= this -> YELLOW (MEDIUM risk)
+  rolling_window_sec: 30.0    # Seconds of signal history used for fusion
+  blink_override_threshold: 0.10       # Force MEDIUM if blink score below this
+  compression_override_threshold: 0.15 # Force MEDIUM if compression score below this
+
+weights:
+  blink: 0.25                  # Strongest liveness signal
+  head_pose: 0.20
+  gaze: 0.15
+  micro_expr: 0.10
+  compression_artifact: 0.15   # Also very reliable for composited deepfakes
+  temporal_jitter: 0.10
+
+alert:
+  action: "warn_user"           # "warn_user" | "log_only"
+  cooldown_sec: 10.0            # Min seconds between alert modals
+  modal_timeout_sec: 8.0        # Auto-dismiss alert after N seconds
