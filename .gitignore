@@ -1,30 +1,54 @@
+# -------------------------
 # Python
+# -------------------------
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# Virtual env
+# Virtual environments
 venv/
 venv310/
 .env/
 
-# OS
+# -------------------------
+# OS / System
+# -------------------------
 .DS_Store
 Thumbs.db
 
+# -------------------------
 # Logs
+# -------------------------
 *.log
 
-# Data (VERY IMPORTANT — don’t push raw sessions)
-data/sessions/
-data/windows/
-data/sequences.npz
+# -------------------------
+# DATA (CRITICAL)
+# -------------------------
+data/
+*.db
+*.csv
+*.npz
 
-# Models (optional: keep best model only)
+# -------------------------
+# MODELS
+# -------------------------
 models/*.pt
 !models/gru_refined_v3.pt
 
+# -------------------------
+# NODE / ELECTRON (CRITICAL)
+# -------------------------
+node_modules/
+overlay/node_modules/
+
+# -------------------------
 # IDE
+# -------------------------
 .vscode/
 .idea/
+
+# -------------------------
+# Misc cache
+# -------------------------
+.cache/
