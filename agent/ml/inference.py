@@ -301,14 +301,20 @@ class GRUInferenceEngine:
     async def _on_frame_event(self, event) -> None:
         """
         Called at ~30 Hz for EVERY frame.
-        AUDIT VERIFIED: no conditional blocking — push_frame is always called.
+        Only pushes to GRU when a face is detected — prevents zero-vector
+        temporal corruption of the sliding buffer.
         """
-        # TRACE: always prints — confirms event bus wiring is live
         print("ML EVENT TRIGGERED")
         try:
             face_present = bool(event.face_detected)
             print(f"ML FACE_PRESENT: {int(face_present)}")
             self._signals["face_present"] = float(face_present)
+
+            # ── CRITICAL FIX: skip GRU buffer push when no face ──────────────
+            if not face_present:
+                print("GRU SKIP: no face detected — buffer unchanged")
+                return   # preserve last valid latest_result and EMA state
+
             self.push_frame(face_present=face_present)
         except Exception as exc:
             logger.warning(
@@ -363,11 +369,9 @@ class GRUInferenceEngine:
                 print("ML SKIP FRAME — signals not ready yet")
                 return self.latest_result
 
-        # Build feature vector in EXACT training order
-        if not face_present:
-            vec = [0.0] * len(self._features)   # zero-fill, NOT skipped
-        else:
-            vec = [self._signals.get(f, 0.0) for f in self._features]
+        # Build feature vector — only called when face_present is True
+        # (no-face frames are gated out in _on_frame_event)
+        vec = [self._signals.get(f, 0.0) for f in self._features]
 
         # Feature vector log every 30 frames
         if self._push_count % 30 == 1:

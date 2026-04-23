@@ -187,6 +187,25 @@ async def main_async(args: argparse.Namespace) -> None:
     gru_engine.register()
     logger.info("GRU inference engine registered")
 
+    # ── CNN visual inference engine (parallel to GRU, non-blocking) ──
+    from agent.ml.cnn_inference import CNNInferenceEngine
+
+    cnn_engine = CNNInferenceEngine(
+        model_path=Path("models/cnn_baseline.pt"),
+    )
+    cnn_engine.register()
+    logger.info("CNN inference engine registered")
+
+    # ── Fusion engine (GRU + CNN decision layer) ──
+    from agent.ml.fusion_engine import FusionEngine
+
+    fusion_engine = FusionEngine(
+        gru_engine=gru_engine,
+        cnn_engine=cnn_engine,
+    )
+    fusion_engine.register()
+    logger.info("Fusion engine registered")
+
     # ── Optional debug overlay ──
     debug_ui = None
     if getattr(args, "debug_ui", False):
@@ -196,9 +215,12 @@ async def main_async(args: argparse.Namespace) -> None:
             risk_engine=risk_engine,
             capture_source=capture,
             gru_engine=gru_engine,
+            cnn_engine=cnn_engine,
+            fusion_engine=fusion_engine,
         )
         debug_ui.register()
         logger.info("Debug UI enabled (--debug-ui)")
+
 
     from agent.api.server import app as api_app
     from agent.api.server import register_handlers, set_audit_store

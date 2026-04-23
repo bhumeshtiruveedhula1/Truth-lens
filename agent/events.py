@@ -47,6 +47,38 @@ class FrameEvent:
     frame_height: int = 480
 
 
+@dataclass
+class CNNEvent:
+    """
+    Emitted by CNNInferenceEngine after each visual inference call.
+    Published at ~10 Hz (every 3rd frame).  Consumed by DebugUI and
+    any future fusion layer.
+    """
+    session_id:          str
+    frame_id:            int
+    cnn_fake_probability: float   # 0.0 = real, 1.0 = fake
+    cnn_label:           str      # "REAL" or "FAKE"
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class FusionEvent:
+    """
+    Final decision produced by FusionEngine by combining GRU + CNN scores.
+    Published at ~10 Hz (whenever either upstream engine updates).
+    Consumed by DebugUI and any downstream API/overlay.
+    """
+    session_id:    str
+    frame_id:      int
+    gru_score:     float   # GRU fake_probability (0=real, 1=fake)
+    cnn_score:     float   # CNN fake_probability (0=real, 1=fake)
+    fusion_score:  float   # 0.6*gru + 0.4*cnn
+    fusion_smooth: float   # EMA-smoothed fusion_score
+    final_status:  str     # "SAFE" | "WARNING" | "HIGH_RISK" | "LOW_CONFIDENCE"
+    reason:        str     # human-readable explanation
+    timestamp: float = field(default_factory=time.time)
+
+
 # ---------------------------------------------------------------------------
 # Biometric signal — emitted by each SignalExtractor in Liveness Engine
 # ---------------------------------------------------------------------------

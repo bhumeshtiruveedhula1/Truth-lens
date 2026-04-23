@@ -57,10 +57,12 @@ class DebugUI:
 
     WINDOW_NAME = "DeepShield Debug"
 
-    def __init__(self, risk_engine, capture_source, gru_engine=None) -> None:
-        self._risk_engine = risk_engine
-        self._capture = capture_source
-        self._gru_engine = gru_engine
+    def __init__(self, risk_engine, capture_source, gru_engine=None, cnn_engine=None, fusion_engine=None) -> None:
+        self._risk_engine   = risk_engine
+        self._capture       = capture_source
+        self._gru_engine    = gru_engine
+        self._cnn_engine    = cnn_engine
+        self._fusion_engine = fusion_engine
         self._running = False
         self._last_frame: Optional[np.ndarray] = None
         self._last_event: Optional[FrameEvent] = None
@@ -314,6 +316,67 @@ class DebugUI:
                 _put("ML Raw",    f"{ml_raw:.4f}",      TEXT_DIM)
                 _put("ML Smooth", f"{ml_smooth:.4f}",   ml_col)
                 _put("ML Label",  ml_label,             ml_col)
+
+            # ── CNN visual inference block ─────────────────────────────────
+            cv2.line(img, (12, y_pos - 6), (panel_w - 12, y_pos - 6),
+                     (70, 70, 70), 1, cv2.LINE_AA)
+
+            cnn = self._cnn_engine.latest_result if self._cnn_engine else None
+
+            if cnn is None:
+                _put("CNN", "disabled", TEXT_DIM)
+            else:
+                cnn_status = cnn.get("status", "LOADING")
+                cnn_prob   = cnn.get("cnn_fake_probability", 0.0)
+                cnn_label  = cnn.get("cnn_label", "REAL")
+
+                if cnn_status in ("LOADING", "NO_MODEL", "LOAD_ERROR"):
+                    cnn_col = (140, 140, 140)   # gray
+                elif cnn_label == "FAKE":
+                    cnn_col = (0, 0, 220)        # red (BGR)
+                else:
+                    cnn_col = (0, 200, 80)       # green
+
+                _put("CNN Status",  cnn_status,            cnn_col if cnn_status == "READY" else TEXT_DIM)
+                _put("CNN Score",   f"{cnn_prob:.4f}",     cnn_col)
+                _put("CNN Label",   cnn_label,             cnn_col)
+
+            # ── FUSION decision block ───────────────────────────────────────
+            cv2.line(img, (12, y_pos - 6), (panel_w - 12, y_pos - 6),
+                     (55, 120, 180), 1, cv2.LINE_AA)   # blue separator for fusion
+
+            fusion = self._fusion_engine.latest_result if self._fusion_engine else None
+
+            if fusion is None:
+                _put("FUSION", "disabled", TEXT_DIM)
+            else:
+                f_status  = fusion.get("status", "LOADING")
+                f_final   = fusion.get("final_status",  "LOW_CONFIDENCE")
+                f_reason  = fusion.get("reason",        "")
+                f_gru     = fusion.get("gru_score",     0.0)
+                f_cnn     = fusion.get("cnn_score",     0.0)
+                f_score   = fusion.get("fusion_score",  0.0)
+                f_smooth  = fusion.get("fusion_smooth", 0.0)
+
+                # Colour by final_status
+                if f_final == "HIGH_RISK":
+                    f_col = (0, 0, 220)         # red (BGR)
+                elif f_final == "WARNING":
+                    f_col = (0, 140, 255)       # orange
+                elif f_final == "SAFE":
+                    f_col = (0, 200, 80)        # green
+                else:
+                    f_col = (140, 140, 140)     # gray (LOW_CONFIDENCE)
+
+                _put("-- FUSION --",   "",                        f_col)
+                _put("GRU Score",      f"{f_gru:.4f}",            TEXT_DIM)
+                _put("CNN Score",      f"{f_cnn:.4f}",            TEXT_DIM)
+                _put("Fusion Score",   f"{f_score:.4f}",          f_col)
+                _put("Fus Smooth",     f"{f_smooth:.4f}",         f_col)
+                _put("Status",         f_final,                   f_col)
+                # Truncate reason to fit panel width
+                reason_short = f_reason[:28] if len(f_reason) > 28 else f_reason
+                _put("Reason",         reason_short,              TEXT_DIM)
 
         else:
             cv2.putText(img, "INITIALIZING", (12, y_pos),
