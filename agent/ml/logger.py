@@ -109,12 +109,15 @@ class MLDataLogger:
     _QUEUE_MAXSIZE = 3000
 
     def __init__(self, session_id: str, base_dir: Path,
-                 label: str = "unknown") -> None:
+                 label: str = "unknown",
+                 save_crops: bool = False) -> None:
         self._session_id = session_id
         self._label = label                              # session-level ML label
         self._session_dir = base_dir / f"session_{session_id}"
         self._csv_path = self._session_dir / "frames.csv"
         self._meta_path = self._session_dir / "metadata.json"
+        self._save_crops = save_crops                    # CNN dataset flag
+        self._crops_dir  = self._session_dir / "frames" # <session>/frames/
 
         # Queue between async handlers (producers) and writer thread (consumer)
         self._queue: queue.Queue[Optional[dict]] = queue.Queue(
@@ -146,6 +149,9 @@ class MLDataLogger:
         """Create output directory and launch background writer thread."""
         try:
             self._session_dir.mkdir(parents=True, exist_ok=True)
+            if self._save_crops:
+                self._crops_dir.mkdir(parents=True, exist_ok=True)
+                logger.info(f"MLDataLogger: face crops -> {self._crops_dir}")
             self._write_metadata()
             self._writer_thread = threading.Thread(
                 target=self._writer_loop,
@@ -237,6 +243,10 @@ class MLDataLogger:
                 "trust_score":    s["trust_score"],
                 "trust_status":   s["trust_status"],
                 "label":          self._label,
+                # CNN crop payload — only populated when --save-crops is active
+                "_crop_roi":      event.face_roi_bgr    if self._save_crops and event.face_detected else None,
+                "_crop_shape":    event.face_roi_shape  if self._save_crops and event.face_detected else None,
+                "_frame_id":      event.frame_id,
             }
             # Non-blocking — drop if queue is full rather than stalling the loop
             self._queue.put_nowait(row)
@@ -250,8 +260,23 @@ class MLDataLogger:
     def _writer_loop(self) -> None:
         """
         Daemon thread — blocks on the queue and writes rows to CSV.
+        Also saves face-crop JPEGs when --save-crops is active.
         Receives None sentinel to stop.
         """
+        import numpy as np
+        import cv2 as _cv2   # local import — keeps module-level deps minimal
+
+        def _letterbox(img: np.ndarray, size: int = 224) -> np.ndarray:
+            h, w = img.shape[:2]
+            scale = size / max(h, w)
+            nh, nw = max(1, int(h * scale)), max(1, int(w * scale))
+            resized = _cv2.resize(img, (nw, nh), interpolation=_cv2.INTER_AREA)
+            canvas = np.zeros((size, size, 3), dtype=np.uint8)
+            y0 = (size - nh) // 2
+            x0 = (size - nw) // 2
+            canvas[y0:y0 + nh, x0:x0 + nw] = resized
+            return canvas
+
         try:
             with open(self._csv_path, "w", newline="", encoding="utf-8") as fh:
                 writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
@@ -268,6 +293,22 @@ class MLDataLogger:
                     if row is None:   # shutdown sentinel
                         fh.flush()
                         break
+
+                    # Extract CNN crop payload (private keys not in CSV schema)
+                    crop_roi   = row.pop("_crop_roi",   None)
+                    crop_shape = row.pop("_crop_shape", None)
+                    frame_id   = row.pop("_frame_id",   None)
+
+                    # Save face crop JPEG if payload present
+                    if self._save_crops and crop_roi is not None and crop_shape is not None:
+                        try:
+                            h, w = crop_shape
+                            arr   = np.frombuffer(crop_roi, dtype=np.uint8).reshape(h, w, 3)
+                            tile  = _letterbox(arr, 224)
+                            fpath = self._crops_dir / f"frame_{frame_id:07d}.jpg"
+                            _cv2.imwrite(str(fpath), tile, [_cv2.IMWRITE_JPEG_QUALITY, 95])
+                        except Exception as crop_exc:
+                            logger.debug(f"MLDataLogger crop save error: {crop_exc}")
 
                     try:
                         writer.writerow(row)

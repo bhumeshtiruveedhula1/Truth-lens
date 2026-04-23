@@ -75,6 +75,12 @@ def parse_args() -> argparse.Namespace:
         choices=["real", "fake", "unknown"],
         help="Session label for ML training (real / fake / unknown)",
     )
+    parser.add_argument(
+        "--save-crops",
+        action="store_true",
+        default=False,
+        help="Save face crop JPEGs to data/sessions/<id>/frames/ for CNN training",
+    )
     return parser.parse_args()
 
 
@@ -165,6 +171,7 @@ async def main_async(args: argparse.Namespace) -> None:
             session_id=session_id,
             base_dir=Path("data/sessions"),
             label=getattr(args, "label", "unknown"),
+            save_crops=getattr(args, "save_crops", False),
         )
         ml_logger.register()
         ml_logger.start()
