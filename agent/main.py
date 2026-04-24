@@ -196,15 +196,25 @@ async def main_async(args: argparse.Namespace) -> None:
     cnn_engine.register()
     logger.info("CNN inference engine registered")
 
-    # ── Fusion engine (GRU + CNN decision layer) ──
+    # ── Deepfake engine (Xception — triggered on elevated suspicion) ──
+    from agent.ml.deepfake_inference import DeepfakeInferenceEngine
+
+    deepfake_engine = DeepfakeInferenceEngine(
+        weights_path=Path("models/deepfake_xception.pkl"),
+    )
+    deepfake_engine.register()
+    logger.info("Deepfake engine registered")
+
+    # ── Fusion engine (GRU + CNN + Deepfake 3-signal decision layer) ──
     from agent.ml.fusion_engine import FusionEngine
 
     fusion_engine = FusionEngine(
         gru_engine=gru_engine,
         cnn_engine=cnn_engine,
+        deepfake_engine=deepfake_engine,
     )
     fusion_engine.register()
-    logger.info("Fusion engine registered")
+    logger.info("Fusion engine registered (3-signal: GRU + CNN + Deepfake)")
 
     # ── Optional debug overlay ──
     debug_ui = None
@@ -217,6 +227,7 @@ async def main_async(args: argparse.Namespace) -> None:
             gru_engine=gru_engine,
             cnn_engine=cnn_engine,
             fusion_engine=fusion_engine,
+            deepfake_engine=deepfake_engine,
         )
         debug_ui.register()
         logger.info("Debug UI enabled (--debug-ui)")

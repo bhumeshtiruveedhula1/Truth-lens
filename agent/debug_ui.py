@@ -1,11 +1,16 @@
 """
-agent/debug_ui.py — Lightweight OpenCV debug overlay
-─────────────────────────────────────────────────────
-Subscribes to FrameEvents, reads the latest risk-engine result,
-and renders a live camera preview with debug telemetry overlay.
-
-Activated via --debug-ui flag.  Zero impact on the pipeline when off.
-Only dependency: cv2 (already in the project).
+agent/debug_ui.py — Analysis-First Debug Overlay
+─────────────────────────────────────────────────
+Layout:
+  ┌──────────────────────────────────────────────────────────┐
+  │  TOP BAR : STATUS | FUSION SCORE | Frame# | MODE:DEBUG   │
+  ├────────────────────────────┬─────────────────────────────┤
+  │                            │  GRU   CNN   DEEPFAKE FUSION│
+  │   CAMERA  (landmarks+box)  │  analysis panel (right)     │
+  │                            │                             │
+  ├────────────────────────────┴─────────────────────────────┤
+  │  ADVANCED signals (smaller font, secondary)               │
+  └──────────────────────────────────────────────────────────┘
 """
 
 from __future__ import annotations
@@ -23,76 +28,80 @@ from agent.events import FrameEvent
 
 logger = logging.getLogger(__name__)
 
-# ── MediaPipe FaceMesh landmark subsets for drawing ────────────
+# ── Landmark subsets ────────────────────────────────────────────────────────
 FACE_OVAL = [
-    10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
-    397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
-    172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 10,
+    10,338,297,332,284,251,389,356,454,323,361,288,
+    397,365,379,378,400,377,152,148,176,149,150,136,
+    172,58,132,93,234,127,162,21,54,103,67,109,10,
 ]
-LEFT_EYE  = [33, 160, 158, 133, 153, 144, 33]
-RIGHT_EYE = [362, 385, 387, 263, 373, 380, 362]
-MOUTH     = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291,
-             308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 61]
+LEFT_EYE  = [33,160,158,133,153,144,33]
+RIGHT_EYE = [362,385,387,263,373,380,362]
+MOUTH     = [61,146,91,181,84,17,314,405,321,375,291,308,324,318,402,317,14,87,178,88,95,61]
 
-# ── Colour palette ─────────────────────────────────────────────
-STATUS_COLOURS = {
-    "SAFE":           (0, 200, 80),    # green
-    "WARNING":        (0, 180, 255),   # orange
-    "HIGH_RISK":      (0, 0, 230),     # red
-    "LOW_CONFIDENCE": (180, 180, 0),   # teal
-    "WARMING_UP":     (200, 160, 0),   # blue-ish
-}
-PANEL_BG   = (30, 30, 30)
-TEXT_WHITE  = (240, 240, 240)
-TEXT_DIM    = (160, 160, 160)
-LANDMARK_C = (0, 255, 200)
-BBOX_C     = (255, 200, 0)
+# ── Colour palette (BGR) ────────────────────────────────────────────────────
+C_SAFE    = (0, 210, 90)
+C_WARN    = (0, 165, 255)
+C_RISK    = (0, 0, 230)
+C_DIM     = (120, 125, 135)
+C_WHITE   = (235, 235, 240)
+C_HEAD    = (175, 180, 205)
+C_PANEL   = (18, 18, 24)
+C_TOPBAR  = (12, 12, 18)
+C_SEP     = (48, 52, 62)
+
+STATUS_COL = {"SAFE": C_SAFE, "WARNING": C_WARN, "HIGH_RISK": C_RISK,
+              "LOW_CONFIDENCE": (160,160,0), "WARMING_UP": (190,150,0)}
+
+# ── Canvas dimensions ───────────────────────────────────────────────────────
+_W       = 1160
+_H       = 710
+_TOP_H   = 50
+_CAM_W   = 700
+_ADV_H   = 80
+_PANEL_W = _W - _CAM_W          # 460
+_CAM_H   = _H - _TOP_H - _ADV_H # 580
 
 
 class DebugUI:
-    """
-    OpenCV-based debug overlay.  Call ``register()`` to subscribe to the
-    event bus, then ``run()`` as an asyncio task.
-    """
+    WINDOW_NAME = "DeepShield — Analysis Monitor"
 
-    WINDOW_NAME = "DeepShield Debug"
-
-    def __init__(self, risk_engine, capture_source, gru_engine=None, cnn_engine=None, fusion_engine=None) -> None:
-        self._risk_engine   = risk_engine
-        self._capture       = capture_source
-        self._gru_engine    = gru_engine
-        self._cnn_engine    = cnn_engine
-        self._fusion_engine = fusion_engine
-        self._running = False
+    def __init__(self, risk_engine, capture_source,
+                 gru_engine=None, cnn_engine=None,
+                 fusion_engine=None, deepfake_engine=None) -> None:
+        self._risk_engine     = risk_engine
+        self._capture         = capture_source
+        self._gru_engine      = gru_engine
+        self._cnn_engine      = cnn_engine
+        self._fusion_engine   = fusion_engine
+        self._deepfake_engine = deepfake_engine
+        self._running         = False
         self._last_frame: Optional[np.ndarray] = None
-        self._last_event: Optional[FrameEvent] = None
+        self._last_event: Optional[FrameEvent]  = None
 
     def register(self) -> None:
         bus.subscribe(FrameEvent, self._on_frame)
         logger.info("DebugUI registered")
 
     async def _on_frame(self, event: FrameEvent) -> None:
-        """Stash last event metadata (landmarks, bbox, face_detected)."""
         self._last_event = event
 
     async def run(self) -> None:
-        """Main render loop — runs at ~30 fps alongside the pipeline."""
         self._running = True
         cv2.namedWindow(self.WINDOW_NAME, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.WINDOW_NAME, 800, 600)
+        cv2.resizeWindow(self.WINDOW_NAME, _W, _H)
         logger.info("DebugUI render loop started")
 
         while self._running:
-            frame = self._grab_frame()
-            if frame is not None:
-                overlay = self._render(frame)
-                cv2.imshow(self.WINDOW_NAME, overlay)
+            raw = getattr(self._capture, "_last_raw_frame", None)
+            if raw is not None:
+                self._last_frame = raw.copy()
 
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
+            canvas = self._compose(self._last_frame, self._last_event)
+            cv2.imshow(self.WINDOW_NAME, canvas)
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
                 self._running = False
                 break
-
             await asyncio.sleep(1 / 30)
 
         cv2.destroyWindow(self.WINDOW_NAME)
@@ -100,290 +109,268 @@ class DebugUI:
     def stop(self) -> None:
         self._running = False
 
-    # ── Frame acquisition ──────────────────────────────────────
+    # ── Composition entry point ─────────────────────────────────────────────
 
-    def _grab_frame(self) -> Optional[np.ndarray]:
-        """Read the latest raw frame from the capture source."""
-        cap = getattr(self._capture, "_cap", None)
-        if cap is None or not cap.isOpened():
-            return self._last_frame  # return stale frame if cam busy
+    def _compose(self, frame: Optional[np.ndarray],
+                 event: Optional[FrameEvent]) -> np.ndarray:
+        canvas = np.full((_H, _W, 3), C_PANEL, dtype=np.uint8)
+        self._draw_top_bar(canvas, event)
+        self._draw_camera(canvas, frame, event)
+        self._draw_right_panel(canvas)
+        self._draw_advanced_bar(canvas, event)
+        return canvas
 
-        # The capture source already reads frames in its own loop.
-        # We reconstruct the full frame from the stored reference.
-        raw = getattr(self._capture, "_last_raw_frame", None)
-        if raw is not None:
-            self._last_frame = raw.copy()
-        return self._last_frame
+    # ── TOP BAR ─────────────────────────────────────────────────────────────
 
-    # ── Rendering ──────────────────────────────────────────────
+    def _draw_top_bar(self, canvas: np.ndarray, event: Optional[FrameEvent]) -> None:
+        cv2.rectangle(canvas, (0, 0), (_W, _TOP_H), C_TOPBAR, -1)
+        cv2.line(canvas, (0, _TOP_H), (_W, _TOP_H), C_SEP, 1)
 
-    def _render(self, frame: np.ndarray) -> np.ndarray:
-        """Compose the final overlay frame."""
-        out = frame.copy()
-        event = self._last_event
-        result = self._risk_engine._latest_result
+        # Fusion status (left)
+        fusion   = self._fusion_engine.latest_result if self._fusion_engine else {}
+        f_status = fusion.get("final_status", "LOADING")
+        f_score  = fusion.get("fusion_smooth", 0.0)
+        f_reason = fusion.get("reason", "")
+        col      = STATUS_COL.get(f_status, C_WHITE)
 
-        # Draw landmarks + bbox if available
-        if event and event.face_detected and event.face_landmarks:
-            self._draw_landmarks(out, event)
-            self._draw_bbox(out, event)
+        # Status badge
+        badge_text = f_status
+        cv2.putText(canvas, badge_text, (14, 34),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.85, col, 2, cv2.LINE_AA)
 
-        # Draw telemetry panel
-        self._draw_panel(out, event, result)
+        bw, _ = cv2.getTextSize(badge_text, cv2.FONT_HERSHEY_SIMPLEX, 0.85, 2)[0], 0
+        x2 = 14 + bw[0] + 16
 
-        return out
+        # Score
+        cv2.putText(canvas, f"score {f_score:.3f}", (x2, 34),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, col, 1, cv2.LINE_AA)
 
-    def _draw_landmarks(self, img: np.ndarray, event: FrameEvent) -> None:
-        h, w = img.shape[:2]
+        # Reason (center)
+        reason_short = f_reason[:40]
+        r_sz = cv2.getTextSize(reason_short, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0]
+        rx = (_CAM_W - r_sz[0]) // 2
+        cv2.putText(canvas, reason_short, (rx, 34),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, C_DIM, 1, cv2.LINE_AA)
+
+        # Frame + mode (right)
+        fid = event.frame_id if event else 0
+        right_text = f"#{fid}   MODE:DEBUG"
+        rt_sz = cv2.getTextSize(right_text, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)[0]
+        cv2.putText(canvas, right_text, (_W - rt_sz[0] - 12, 32),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, C_DIM, 1, cv2.LINE_AA)
+
+    # ── CAMERA ZONE ─────────────────────────────────────────────────────────
+
+    def _draw_camera(self, canvas: np.ndarray, frame: Optional[np.ndarray],
+                     event: Optional[FrameEvent]) -> None:
+        cam_y0, cam_y1 = _TOP_H, _TOP_H + _CAM_H
+
+        # Dark camera background
+        cv2.rectangle(canvas, (0, cam_y0), (_CAM_W, cam_y1), (8, 8, 12), -1)
+        cv2.line(canvas, (_CAM_W, cam_y0), (_CAM_W, cam_y1), C_SEP, 1)
+
+        if frame is None:
+            cv2.putText(canvas, "NO SIGNAL", (80, cam_y0 + _CAM_H // 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, C_DIM, 2, cv2.LINE_AA)
+            return
+
+        # Scale frame to fit camera zone with letterbox
+        fh, fw = frame.shape[:2]
+        scale  = min(_CAM_W / fw, _CAM_H / fh)
+        nw, nh = int(fw * scale), int(fh * scale)
+        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        x0 = (_CAM_W - nw) // 2
+        y0 = cam_y0 + (_CAM_H - nh) // 2
+        canvas[y0:y0+nh, x0:x0+nw] = resized
+
+        # Draw landmarks + bbox on the camera portion
+        if event and event.face_detected:
+            self._draw_landmarks(canvas, event, x0, y0, nw, nh)
+            self._draw_bbox(canvas, event, x0, y0, nw, nh)
+
+        # Inline camera labels (top-left of camera zone)
+        face_col  = C_SAFE if (event and event.face_detected) else C_RISK
+        face_text = "FACE DETECTED" if (event and event.face_detected) else "NO FACE"
+        cv2.putText(canvas, face_text, (x0 + 8, cam_y0 + 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, face_col, 1, cv2.LINE_AA)
+
+    def _draw_landmarks(self, img, event, x0, y0, nw, nh) -> None:
         lm = event.face_landmarks
+        fw, fh = event.frame_width, event.frame_height
 
-        def _draw_strip(indices, colour, thickness=1):
+        def _strip(indices, colour):
             pts = []
             for i in indices:
                 if i < len(lm):
-                    x = int(lm[i][0] * w)
-                    y = int(lm[i][1] * h)
-                    pts.append((x, y))
+                    px = x0 + int(lm[i][0] * nw)
+                    py = y0 + int(lm[i][1] * nh)
+                    pts.append((px, py))
             for a, b in zip(pts, pts[1:]):
-                cv2.line(img, a, b, colour, thickness, cv2.LINE_AA)
+                cv2.line(img, a, b, colour, 1, cv2.LINE_AA)
 
-        _draw_strip(FACE_OVAL, (100, 200, 100), 1)
-        _draw_strip(LEFT_EYE,  (0, 255, 255), 1)
-        _draw_strip(RIGHT_EYE, (0, 255, 255), 1)
-        _draw_strip(MOUTH,     (200, 100, 255), 1)
+        _strip(FACE_OVAL, (80, 185, 80))
+        _strip(LEFT_EYE,  (0, 230, 230))
+        _strip(RIGHT_EYE, (0, 230, 230))
+        _strip(MOUTH,     (180, 90, 230))
+        for i in range(0, len(lm), 8):
+            px = x0 + int(lm[i][0] * nw)
+            py = y0 + int(lm[i][1] * nh)
+            cv2.circle(img, (px, py), 1, (0, 220, 180), -1, cv2.LINE_AA)
 
-        # Draw sparse landmark dots
-        for i in range(0, len(lm), 6):
-            x = int(lm[i][0] * w)
-            y = int(lm[i][1] * h)
-            cv2.circle(img, (x, y), 1, LANDMARK_C, -1, cv2.LINE_AA)
+    def _draw_bbox(self, img, event, x0, y0, nw, nh) -> None:
+        bx, by, bw, bh = event.face_bbox
+        fw, fh = event.frame_width, event.frame_height
+        sx = nw / fw;  sy = nh / fh
+        rx1 = x0 + int(bx * sx)
+        ry1 = y0 + int(by * sy)
+        rx2 = x0 + int((bx + bw) * sx)
+        ry2 = y0 + int((by + bh) * sy)
+        cv2.rectangle(img, (rx1, ry1), (rx2, ry2), (210, 185, 0), 2, cv2.LINE_AA)
 
-    def _draw_bbox(self, img: np.ndarray, event: FrameEvent) -> None:
-        x, y, bw, bh = event.face_bbox
-        cv2.rectangle(img, (x, y), (x + bw, y + bh), BBOX_C, 2, cv2.LINE_AA)
+    # ── RIGHT ANALYSIS PANEL ─────────────────────────────────────────────────
 
-    def _draw_panel(self, img: np.ndarray, event: Optional[FrameEvent],
-                    result: Optional[dict]) -> None:
-        """Draw the semi-transparent telemetry panel on the left side."""
-        h, w = img.shape[:2]
-        panel_w = 280
-        panel_h = 420  # extended for ML inference rows
+    def _draw_right_panel(self, canvas: np.ndarray) -> None:
+        px = _CAM_W
+        py0, py1 = _TOP_H, _TOP_H + _CAM_H
+        lh = 24      # line height
+        sh = 30      # section header height
+        pad = 14     # left padding inside panel
 
-        # Semi-transparent dark background
-        overlay = img.copy()
-        cv2.rectangle(overlay, (4, 4), (panel_w, panel_h), PANEL_BG, -1)
-        cv2.addWeighted(overlay, 0.75, img, 0.25, 0, img)
+        y = py0 + 10
 
-        y_pos = 26
-        line_h = 22
+        def _section(title: str, border_col) -> None:
+            nonlocal y
+            cv2.line(canvas, (px + 8, y + 4), (px + _PANEL_W - 8, y + 4),
+                     border_col, 1, cv2.LINE_AA)
+            cv2.putText(canvas, title, (px + pad, y + 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, border_col, 1, cv2.LINE_AA)
+            y += sh
 
-        def _put(label: str, value: str, colour=TEXT_WHITE):
-            nonlocal y_pos
-            cv2.putText(img, f"{label}:", (12, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, TEXT_DIM, 1, cv2.LINE_AA)
-            cv2.putText(img, str(value), (130, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, colour, 1, cv2.LINE_AA)
-            y_pos += line_h
+        def _row(label: str, value: str, col=C_WHITE) -> None:
+            nonlocal y
+            if y > py1 - 12:
+                return
+            cv2.putText(canvas, label, (px + pad, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, C_DIM, 1, cv2.LINE_AA)
+            cv2.putText(canvas, value, (px + pad + 118, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.44, col, 1, cv2.LINE_AA)
+            y += lh
 
-        # ── Status + Score ──
-        if result:
-            status = result.get("status", "—")
-            score  = result.get("score", 0.0)
-            sc = STATUS_COLOURS.get(status, TEXT_WHITE)
+        def _spacer(n=6) -> None:
+            nonlocal y; y += n
 
-            # Big status badge
-            cv2.putText(img, status, (12, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, sc, 2, cv2.LINE_AA)
-            cv2.putText(img, f"{score:.2f}", (200, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, sc, 2, cv2.LINE_AA)
-            y_pos += line_h + 6
+        # ── GRU ──────────────────────────────────────────────────────────────
+        _section("GRU  /  BEHAVIORAL", (90, 160, 255))
+        gru = self._gru_engine.latest_result if self._gru_engine else {}
+        g_status = gru.get("status", "BUFFERING")
+        g_raw    = gru.get("raw_score",    gru.get("fake_probability", 0.0))
+        g_smooth = gru.get("smoothed_score", g_raw)
+        g_label  = gru.get("fake_label", "REAL")
+        g_col    = C_SAFE if g_label == "REAL" else C_RISK
+        if g_status != "READY":
+            g_col = C_DIM
+        _row("Status",  "READY" if g_status == "READY" else "BUFFERING", g_col)
+        _row("Raw",     f"{g_raw:.4f}", C_DIM)
+        _row("Smooth",  f"{g_smooth:.4f}", g_col)
+        _row("Label",   g_label, g_col)
+        _spacer()
 
-            # ── Score bar ──
-            bar_x, bar_y, bar_w, bar_h = 12, y_pos - 4, panel_w - 24, 10
-            cv2.rectangle(img, (bar_x, bar_y),
-                          (bar_x + bar_w, bar_y + bar_h), (60, 60, 60), -1)
-            fill = int(bar_w * max(0, min(1, score)))
-            cv2.rectangle(img, (bar_x, bar_y),
-                          (bar_x + fill, bar_y + bar_h), sc, -1)
-            y_pos += line_h
+        # ── CNN ───────────────────────────────────────────────────────────────
+        _section("CNN  /  LIVENESS", (0, 195, 120))
+        cnn = self._cnn_engine.latest_result if self._cnn_engine else {}
+        c_status = cnn.get("status", "LOADING")
+        c_prob   = cnn.get("cnn_fake_probability", 0.0)
+        c_label  = cnn.get("cnn_label", "REAL")
+        c_col    = C_SAFE if c_label == "REAL" else C_RISK
+        if c_status != "READY":
+            c_col = C_DIM
+        _row("Status",  c_status, c_col if c_status == "READY" else C_DIM)
+        _row("Score",   f"{c_prob:.4f}", c_col)
+        _row("Label",   c_label, c_col)
+        _spacer()
 
-            signals = result.get("signals", {})
-            blink = signals.get("blink", {})
-            head  = signals.get("head_pose", {})
-            tex   = signals.get("texture", {})
-
-            # ── Signal lines ──
-            ear = blink.get("ear", 0.0)
-            blink_det = blink.get("blink_detected", False)
-            _put("Face", "DETECTED" if (event and event.face_detected) else "MISSING",
-                 (0, 220, 0) if (event and event.face_detected) else (0, 0, 220))
-
-            blink_str = f"{'YES' if blink_det else 'no'}  EAR={ear:.3f}"
-            _put("Blink", blink_str,
-                 (0, 255, 100) if blink_det else TEXT_WHITE)
-
-            yaw   = head.get("yaw", 0.0)
-            pitch = head.get("pitch", 0.0)
-            _put("Yaw / Pitch", f"{yaw:+.1f}  /  {pitch:+.1f}")
-
-            direction = head.get("direction", "—")
-            _put("Direction", direction)
-
-            spoof = tex.get("is_spoof", False)
-            lap   = tex.get("laplacian_score", 0.0)
-            _put("Texture", f"{'SPOOF' if spoof else 'OK'}  lap={lap:.0f}",
-                 (0, 0, 220) if spoof else (0, 220, 0))
-
-            memory = result.get("memory", {})
-
-            # ── Non-rigid motion (rigid vs non-rigid decomposition) ──
-            nr_var  = memory.get("motion_raw", 0.0)   # raw residual variance
-            m_score = memory.get("motion_score", 0.5)  # normalised 0–1
-            still_d = memory.get("still_duration", 0.0)
-            if m_score >= 0.5:
-                m_colour = (0, 200, 80)     # green — non-rigid motion detected
-            elif m_score >= 0.2:
-                m_colour = (0, 180, 255)    # orange — low non-rigid motion
-            else:
-                m_colour = (0, 0, 230)      # red — rigid/static suspected
-            still_str = f" still:{still_d:.1f}s" if still_d > 0.5 else ""
-            _put("NR-var", f"{nr_var:.5f}  sc={m_score:.2f}{still_str}", m_colour)
-
-            # ── Temporal consistency (irregularity = mean-abs-diff of motion history) ──
-            irr     = memory.get("temporal_var", 0.0)   # key kept for compat
-            t_score = memory.get("temporal_score", 0.5)
-            if t_score >= 0.20:
-                tc_colour = (0, 200, 80)    # green — natural irregular motion
-            elif t_score >= 0.08:
-                tc_colour = (0, 180, 255)   # orange — borderline
-            else:
-                tc_colour = (0, 0, 230)     # red — flat/static/rigid signal
-            _put("Irregularity", f"{irr:.6f}  sc={t_score:.2f}", tc_colour)
-
-            # ── Rigid ratio (1.0 = purely rigid/phone, 0.0 = purely non-rigid/live) ──
-            rigid_r = memory.get("rigid_ratio", 0.0)
-            if rigid_r <= 0.5:
-                rr_colour = (0, 200, 80)    # green — mostly non-rigid
-            elif rigid_r <= 0.75:
-                rr_colour = (0, 180, 255)   # orange — borderline
-            else:
-                rr_colour = (0, 0, 230)     # red — rigid/phone suspected
-            _put("Rigid ratio", f"{rigid_r:.3f}", rr_colour)
-
-            # ── Blink validation status ──
-            blink_valid = memory.get("blink_validated", False)
-            blink_st    = memory.get("blink_state", "IDLE")
-            if blink_valid:
-                bv_str    = "VALIDATED"
-                bv_colour = (0, 220, 80)
-            else:
-                bv_str    = f"ignored [{blink_st}]"
-                bv_colour = TEXT_DIM
-            _put("Blink gate", bv_str, bv_colour)
-
-            # ── Last detected blink (informational only) ──
-            blink_age = memory.get("blink_age", 0.0)
-            if blink_age == float("inf"):
-                _put("Last blink", "never detected", TEXT_DIM)
-            else:
-                _put("Last blink", f"{blink_age:.1f} sec ago", TEXT_DIM)
-
-            # ── GRU ML inference block ───────────────────────────────────
-            # Separator line
-            cv2.line(img, (12, y_pos - 6), (panel_w - 12, y_pos - 6),
-                     (70, 70, 70), 1, cv2.LINE_AA)
-
-            ml = self._gru_engine.latest_result if self._gru_engine else None
-
-            if ml is None:
-                _put("ML", "disabled", TEXT_DIM)
-            else:
-                ml_status    = ml.get("status", "INSUFFICIENT_DATA")
-                ml_raw       = ml.get("raw_score",      ml.get("fake_probability", 0.0))
-                ml_smooth    = ml.get("smoothed_score", ml.get("fake_probability", 0.0))
-                ml_label     = ml.get("fake_label", "REAL")
-
-                # Colour coding — driven by smoothed score and label
-                if ml_status == "INSUFFICIENT_DATA":
-                    ml_col = (140, 140, 140)   # gray
-                elif ml_label == "FAKE":
-                    ml_col = (0, 0, 220)        # red  (BGR)
-                else:
-                    ml_col = (0, 200, 80)       # green
-
-                status_str = "READY" if ml_status == "READY" else "BUFFERING"
-                _put("ML Status", status_str,           ml_col)
-                _put("ML Raw",    f"{ml_raw:.4f}",      TEXT_DIM)
-                _put("ML Smooth", f"{ml_smooth:.4f}",   ml_col)
-                _put("ML Label",  ml_label,             ml_col)
-
-            # ── CNN visual inference block ─────────────────────────────────
-            cv2.line(img, (12, y_pos - 6), (panel_w - 12, y_pos - 6),
-                     (70, 70, 70), 1, cv2.LINE_AA)
-
-            cnn = self._cnn_engine.latest_result if self._cnn_engine else None
-
-            if cnn is None:
-                _put("CNN", "disabled", TEXT_DIM)
-            else:
-                cnn_status = cnn.get("status", "LOADING")
-                cnn_prob   = cnn.get("cnn_fake_probability", 0.0)
-                cnn_label  = cnn.get("cnn_label", "REAL")
-
-                if cnn_status in ("LOADING", "NO_MODEL", "LOAD_ERROR"):
-                    cnn_col = (140, 140, 140)   # gray
-                elif cnn_label == "FAKE":
-                    cnn_col = (0, 0, 220)        # red (BGR)
-                else:
-                    cnn_col = (0, 200, 80)       # green
-
-                _put("CNN Status",  cnn_status,            cnn_col if cnn_status == "READY" else TEXT_DIM)
-                _put("CNN Score",   f"{cnn_prob:.4f}",     cnn_col)
-                _put("CNN Label",   cnn_label,             cnn_col)
-
-            # ── FUSION decision block ───────────────────────────────────────
-            cv2.line(img, (12, y_pos - 6), (panel_w - 12, y_pos - 6),
-                     (55, 120, 180), 1, cv2.LINE_AA)   # blue separator for fusion
-
-            fusion = self._fusion_engine.latest_result if self._fusion_engine else None
-
-            if fusion is None:
-                _put("FUSION", "disabled", TEXT_DIM)
-            else:
-                f_status  = fusion.get("status", "LOADING")
-                f_final   = fusion.get("final_status",  "LOW_CONFIDENCE")
-                f_reason  = fusion.get("reason",        "")
-                f_gru     = fusion.get("gru_score",     0.0)
-                f_cnn     = fusion.get("cnn_score",     0.0)
-                f_score   = fusion.get("fusion_score",  0.0)
-                f_smooth  = fusion.get("fusion_smooth", 0.0)
-
-                # Colour by final_status
-                if f_final == "HIGH_RISK":
-                    f_col = (0, 0, 220)         # red (BGR)
-                elif f_final == "WARNING":
-                    f_col = (0, 140, 255)       # orange
-                elif f_final == "SAFE":
-                    f_col = (0, 200, 80)        # green
-                else:
-                    f_col = (140, 140, 140)     # gray (LOW_CONFIDENCE)
-
-                _put("-- FUSION --",   "",                        f_col)
-                _put("GRU Score",      f"{f_gru:.4f}",            TEXT_DIM)
-                _put("CNN Score",      f"{f_cnn:.4f}",            TEXT_DIM)
-                _put("Fusion Score",   f"{f_score:.4f}",          f_col)
-                _put("Fus Smooth",     f"{f_smooth:.4f}",         f_col)
-                _put("Status",         f_final,                   f_col)
-                # Truncate reason to fit panel width
-                reason_short = f_reason[:28] if len(f_reason) > 28 else f_reason
-                _put("Reason",         reason_short,              TEXT_DIM)
-
+        # ── DEEPFAKE ──────────────────────────────────────────────────────────
+        _section("DEEPFAKE  /  XCEPTION", (160, 70, 220))
+        df       = self._deepfake_engine.latest_result if self._deepfake_engine else {}
+        df_st    = df.get("status", "INIT")
+        df_prob  = df.get("deepfake_probability", 0.0)
+        df_label = df.get("deepfake_label", "REAL")
+        df_col   = C_SAFE if df_label == "REAL" else C_RISK
+        if df_st != "READY":
+            _row("Status", df_st, C_DIM)
+            _row("Score",  "--", C_DIM)
+            _row("Label",  "--", C_DIM)
         else:
-            cv2.putText(img, "INITIALIZING", (12, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_DIM, 2, cv2.LINE_AA)
+            _row("Status", "READY", C_DIM)
+            _row("Score",  f"{df_prob:.4f}", df_col)
+            _row("Label",  df_label, df_col)
+        _spacer()
 
-        # ── Bottom-right: frame counter + fps hint ──
-        if event:
-            cv2.putText(img, f"#{event.frame_id}",
-                        (w - 80, h - 12),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_DIM, 1, cv2.LINE_AA)
+        # ── FUSION ────────────────────────────────────────────────────────────
+        _section("FUSION  /  DECISION", C_WARN)
+        fusion   = self._fusion_engine.latest_result if self._fusion_engine else {}
+        f_status = fusion.get("final_status",   "LOW_CONFIDENCE")
+        f_gscore = fusion.get("gru_score",      0.0)
+        f_cscore = fusion.get("cnn_score",       0.0)
+        f_dscore = fusion.get("deepfake_score",  0.0)
+        f_score  = fusion.get("fusion_score",    0.0)
+        f_smooth = fusion.get("fusion_smooth",   0.0)
+        f_reason = fusion.get("reason",          "")
+        f_col    = STATUS_COL.get(f_status, C_DIM)
+        _row("Status",    f_status,          f_col)
+        _row("GRU  in",   f"{f_gscore:.4f}", C_DIM)
+        _row("CNN  in",   f"{f_cscore:.4f}", C_DIM)
+        _row("DF   in",   f"{f_dscore:.4f}", C_DIM)
+        _row("Score",     f"{f_score:.4f}",  f_col)
+        _row("Smooth",    f"{f_smooth:.4f}", f_col)
+        _row("Reason",    f_reason[:24],     C_DIM)
+
+    # ── ADVANCED BAR ─────────────────────────────────────────────────────────
+
+    def _draw_advanced_bar(self, canvas: np.ndarray,
+                           event: Optional[FrameEvent]) -> None:
+        y0 = _TOP_H + _CAM_H
+        cv2.rectangle(canvas, (0, y0), (_W, _H), (14, 14, 20), -1)
+        cv2.line(canvas, (0, y0), (_W, y0), C_SEP, 1)
+
+        result   = getattr(self._risk_engine, "_latest_result", None) or {}
+        signals  = result.get("signals", {})
+        blink    = signals.get("blink", {})
+        head     = signals.get("head_pose", {})
+        tex      = signals.get("texture", {})
+        memory   = result.get("memory", {})
+
+        ear      = blink.get("ear", 0.0)
+        bdet     = blink.get("blink_detected", False)
+        yaw      = head.get("yaw", 0.0)
+        pitch    = head.get("pitch", 0.0)
+        lap      = tex.get("laplacian_score", 0.0)
+        m_score  = memory.get("motion_score", 0.0)
+        t_score  = memory.get("temporal_score", 0.0)
+        rigid_r  = memory.get("rigid_ratio", 0.0)
+        bv       = memory.get("blink_validated", False)
+
+        items = [
+            ("EAR",    f"{ear:.3f}"),
+            ("Blink",  "YES" if bdet else "no"),
+            ("Yaw",    f"{yaw:+.1f}"),
+            ("Pitch",  f"{pitch:+.1f}"),
+            ("Texture",f"{lap:.0f}"),
+            ("Motion", f"{m_score:.2f}"),
+            ("Temp",   f"{t_score:.2f}"),
+            ("Rigid",  f"{rigid_r:.3f}"),
+            ("BlinkV", "OK" if bv else "wait"),
+        ]
+
+        x = 14
+        for label, val in items:
+            col_v = C_WHITE
+            if label == "Blink" and bdet:  col_v = C_SAFE
+            if label == "BlinkV" and bv:   col_v = C_SAFE
+            cv2.putText(canvas, f"{label}:", (x, y0 + 26),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, C_DIM, 1, cv2.LINE_AA)
+            cv2.putText(canvas, val, (x, y0 + 52),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.40, col_v, 1, cv2.LINE_AA)
+            x += 108
+            if x > _W - 80:
+                break

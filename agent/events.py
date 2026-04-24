@@ -64,18 +64,35 @@ class CNNEvent:
 @dataclass
 class FusionEvent:
     """
-    Final decision produced by FusionEngine by combining GRU + CNN scores.
-    Published at ~10 Hz (whenever either upstream engine updates).
+    Final decision produced by FusionEngine combining GRU + CNN + Deepfake scores.
+    Published at ~10 Hz (whenever CNNEvent fires).
     Consumed by DebugUI and any downstream API/overlay.
     """
-    session_id:    str
-    frame_id:      int
-    gru_score:     float   # GRU fake_probability (0=real, 1=fake)
-    cnn_score:     float   # CNN fake_probability (0=real, 1=fake)
-    fusion_score:  float   # 0.6*gru + 0.4*cnn
-    fusion_smooth: float   # EMA-smoothed fusion_score
-    final_status:  str     # "SAFE" | "WARNING" | "HIGH_RISK" | "LOW_CONFIDENCE"
-    reason:        str     # human-readable explanation
+    session_id:     str
+    frame_id:       int
+    gru_score:      float   # GRU behavioral fake probability (0=real, 1=fake)
+    cnn_score:      float   # CNN liveness fake probability  (0=real, 1=fake)
+    deepfake_score: float   # Xception deepfake probability  (0=real, 1=fake)
+    fusion_score:   float   # weighted combination
+    fusion_smooth:  float   # EMA-smoothed fusion_score
+    final_status:   str     # "SAFE" | "WARNING" | "HIGH_RISK" | "LOW_CONFIDENCE"
+    reason:         str     # human-readable explanation
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
+class DeepfakeEvent:
+    """
+    Emitted by DeepfakeInferenceEngine after each Xception forward pass.
+    Fired at most every 300ms, only when CNN or fusion signals are elevated.
+    """
+    session_id:           str
+    frame_id:             int
+    deepfake_probability: float   # 0.0=real, 1.0=deepfake
+    deepfake_label:       str     # "REAL" | "FAKE"
+    trigger_cnn:          bool    # fired because cnn_score > 0.6
+    trigger_fusion:       bool    # fired because fusion WARNING/HIGH_RISK
+    trigger_timeout:      bool    # fired because >1s since last run
     timestamp: float = field(default_factory=time.time)
 
 
