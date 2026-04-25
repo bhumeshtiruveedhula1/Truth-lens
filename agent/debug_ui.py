@@ -290,20 +290,23 @@ class DebugUI:
         _spacer()
 
         # ── DEEPFAKE ──────────────────────────────────────────────────────────
-        _section("DEEPFAKE  /  XCEPTION", (160, 70, 220))
+        _section("DEEPFAKE  /  EFFICIENTNET", (160, 70, 220))
         df       = self._deepfake_engine.latest_result if self._deepfake_engine else {}
         df_st    = df.get("status", "INIT")
         df_prob  = df.get("deepfake_probability", 0.0)
         df_label = df.get("deepfake_label", "REAL")
+        df_back  = df.get("active_backend", "--")
         df_col   = C_SAFE if df_label == "REAL" else C_RISK
         if df_st != "READY":
-            _row("Status", df_st, C_DIM)
-            _row("Score",  "--", C_DIM)
-            _row("Label",  "--", C_DIM)
+            _row("Status",  df_st,   C_DIM)
+            _row("Score",   "--",    C_DIM)
+            _row("Label",   "--",    C_DIM)
+            _row("Backend", df_back, C_DIM)
         else:
-            _row("Status", "READY", C_DIM)
-            _row("Score",  f"{df_prob:.4f}", df_col)
-            _row("Label",  df_label, df_col)
+            _row("Status",  "READY",           C_DIM)
+            _row("Score",   f"{df_prob:.4f}",  df_col)
+            _row("Label",   df_label,           df_col)
+            _row("Backend", df_back,            C_DIM)
         _spacer()
 
         # ── FUSION ────────────────────────────────────────────────────────────
@@ -324,6 +327,13 @@ class DebugUI:
         _row("Score",     f"{f_score:.4f}",  f_col)
         _row("Smooth",    f"{f_smooth:.4f}", f_col)
         _row("Reason",    f_reason[:24],     C_DIM)
+
+        # ── Structured signal log line ───────────────────────────────────────
+        import logging as _log
+        _log.getLogger("deepshield.signals").debug(
+            f"g={f_gscore:.3f} c={f_cscore:.3f} "
+            f"id=-- d={f_dscore:.3f} -> {f_status} ({f_reason})"
+        )
 
     # ── ADVANCED BAR ─────────────────────────────────────────────────────────
 

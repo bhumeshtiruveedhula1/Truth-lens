@@ -1,24 +1,35 @@
 """
 agent/ml/deepfake_efficientnet.py — EfficientNet-B0 Deepfake Detector
 ======================================================================
-Model:   EfficientNet-B0  (torchvision)
-Weights: Xicor9/efficientnet-b0-ffpp-c23  (HuggingFace, FF++ C23)
-         ~21 MB, downloaded via torch.hub on first use, cached to disk.
+Model:   EfficientNet-B0  (torchvision, ImageNet pretrained backbone)
+Weights: models/deepfake_efficientnet_final.pt
+         Trained locally on:
+           - Celeb-DF v2 (real + fake)
+           - Webcam real captures (person_1..4)
+           - OBS virtual camera fakes (obs_p1..4)
+         Domain-aligned, identity-safe train/val split.
 
-Training data (from model card):
-  FaceForensics++ C23 — DeepFake, FaceSwap, Face2Face, NeuralTextures
+Validation results (held-out val set):
+  REAL avg P(fake) = 0.127   (FP rate = 6.7%)
+  FAKE avg P(fake) = 0.788   (detection rate = 72.5%)
+  Val accuracy     = 93.7%
 
-Architecture (exact match required for state_dict load):
+Architecture:
   efficientnet_b0
-    └── classifier[1]: Linear(1280 → 2)   [0=Real, 1=Fake]
+    classifier[1]: Linear(1280 -> 1)   single logit
 
 Output:
-  softmax(logits, dim=1)[0][1].item()   → P(fake), float in [0, 1]
+  sigmoid(logit).item()   -> P(fake), float in [0, 1]
 
-Preprocessing (EXACT from model card — NO normalization):
-  BGR numpy → RGB → PIL
-  → Resize(224, 224)
-  → ToTensor()          [0,255] → [0.0, 1.0]
+Preprocessing (EXACT match to training — agent/scripts/train_deepfake_final.py):
+  BGR numpy
+    -> RGB
+    -> PIL.Image.fromarray()
+    -> Resize(224, 224)
+    -> ToTensor()                [0,255] -> [0.0, 1.0]
+    -> Normalize([0.485,0.456,0.406], [0.229,0.224,0.225])  (ImageNet)
+
+IMPORTANT: Normalize IS used (ImageNet stats) — model trained with it.
 
 This module is PURE inference — no async, no events, no throttle.
 All of that lives in DeepfakeInferenceEngine (deepfake_inference.py).
@@ -34,23 +45,18 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# ── Remote weights ─────────────────────────────────────────────────────────────
-WEIGHTS_URL = (
-    "https://huggingface.co/Xicor9/efficientnet-b0-ffpp-c23"
-    "/resolve/main/efficientnet_b0_ffpp_c23.pth"
-)
+# ── Local weights path ─────────────────────────────────────────────────────────
+WEIGHTS_LOCAL = Path("models/deepfake_efficientnet_final.pt")
 
-# Local cache path — avoids re-downloading on every restart
-WEIGHTS_CACHE = Path("models/deepfake_efficientnet_b0.pt")
+# ImageNet normalization stats — MUST match training
+_IMAGENET_MEAN = [0.485, 0.456, 0.406]
+_IMAGENET_STD  = [0.229, 0.224, 0.225]
 
 
-def load_model(device: str = "cpu", cache_path: Path = WEIGHTS_CACHE):
+def load_model(device: str = "cpu", weights_path: Path = WEIGHTS_LOCAL):
     """
-    Build EfficientNet-B0 with binary deepfake head and load FF++ weights.
-
-    Download order:
-      1. cache_path (local disk)  — fast, offline-safe
-      2. WEIGHTS_URL (HuggingFace) — first-run download (~21 MB)
+    Build EfficientNet-B0 with binary head (Linear 1280->1) and load
+    locally-trained weights from models/deepfake_efficientnet_final.pt.
 
     Returns:
       model in eval() mode on `device`, or None on failure.
@@ -60,35 +66,30 @@ def load_model(device: str = "cpu", cache_path: Path = WEIGHTS_CACHE):
         import torch.nn as nn
         from torchvision.models import efficientnet_b0
 
-        # ── Build architecture (must match checkpoint exactly) ────────────────
+        # ── Build architecture (MUST match training: Linear(1280->1)) ────────
         model = efficientnet_b0(weights=None)
         in_features = model.classifier[1].in_features          # 1280
-        model.classifier[1] = nn.Linear(in_features, 2)        # [Real, Fake]
+        model.classifier[1] = nn.Linear(in_features, 1)        # single logit
 
-        # ── Load weights ──────────────────────────────────────────────────────
-        if cache_path.exists():
-            print(f"EFFICIENTNET: loading from cache  {cache_path}")
-            state = torch.load(str(cache_path), map_location=device)
-        else:
+        # ── Load local weights ────────────────────────────────────────────────
+        if not weights_path.exists():
             print(
-                f"EFFICIENTNET: downloading FF++ weights (~21 MB)...\n"
-                f"  from: {WEIGHTS_URL}\n"
-                f"  cache: {cache_path}"
+                f"EFFICIENTNET: weights not found at {weights_path}\n"
+                f"  Run: python scripts/train_deepfake_final.py to train."
             )
-            state = torch.hub.load_state_dict_from_url(
-                WEIGHTS_URL,
-                map_location=device,
-                progress=True,
-            )
-            # Save to cache for future runs
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(state, str(cache_path))
-            print(f"EFFICIENTNET: weights cached to {cache_path}")
+            return None
 
+        print(f"EFFICIENTNET: loading from {weights_path}")
+        state = torch.load(str(weights_path), map_location=device)
         model.load_state_dict(state)
         model.eval()
         model.to(device)
-        print(f"EFFICIENTNET: model ready  device={device}  in_features={in_features}")
+
+        size_mb = weights_path.stat().st_size / 1e6
+        print(
+            f"EFFICIENTNET: model ready  device={device}  "
+            f"size={size_mb:.1f}MB  head=Linear({in_features}->1)"
+        )
         return model
 
     except Exception as exc:
@@ -101,30 +102,30 @@ def preprocess(bgr_numpy: np.ndarray):
     """
     Convert BGR face crop to EfficientNet input tensor.
 
-    Preprocessing EXACTLY as defined in model card
-    (https://huggingface.co/Xicor9/efficientnet-b0-ffpp-c23):
+    Preprocessing EXACTLY as used during training
+    (scripts/train_deepfake_final.py, _base transform):
 
       BGR ndarray
-        → RGB  (channel flip)
-        → PIL.Image.fromarray()
-        → Resize(224, 224)
-        → ToTensor()          [0,255] uint8 → [0.0, 1.0] float
-        → unsqueeze(0)        add batch dim
-
-    IMPORTANT: NO ImageNet normalization — the model was trained without it.
+        -> RGB  (channel flip)
+        -> PIL.Image.fromarray()
+        -> Resize(224, 224)
+        -> ToTensor()          [0,255] uint8 -> [0.0, 1.0] float
+        -> Normalize(ImageNet mean, std)
+        -> unsqueeze(0)        add batch dim
 
     Returns:
-      torch.Tensor  shape [1, 3, 224, 224], float32, CPU
+      torch.Tensor  shape [1, 3, 224, 224], float32
     """
     from PIL import Image
     from torchvision import transforms
 
-    rgb = bgr_numpy[..., ::-1].copy()           # BGR → RGB
+    rgb = bgr_numpy[..., ::-1].copy()           # BGR -> RGB
     pil = Image.fromarray(rgb.astype("uint8"))
 
     tf = transforms.Compose([
         transforms.Resize((224, 224)),
-        transforms.ToTensor(),                   # [0,1] only — no Normalize()
+        transforms.ToTensor(),
+        transforms.Normalize(_IMAGENET_MEAN, _IMAGENET_STD),
     ])
     return tf(pil).unsqueeze(0)                  # [1, 3, 224, 224]
 
@@ -144,10 +145,9 @@ def predict(bgr_numpy: np.ndarray, model, device: str = "cpu") -> float:
         1.0 = confidently fake
     """
     import torch
-    import torch.nn as nn
 
     tensor = preprocess(bgr_numpy).to(device)
     with torch.no_grad():
-        logits = model(tensor)                       # [1, 2]
-    prob_fake = torch.softmax(logits, dim=1)[0][1].item()
+        logit = model(tensor)                        # [1, 1]
+    prob_fake = torch.sigmoid(logit)[0][0].item()   # single logit -> sigmoid
     return float(prob_fake)

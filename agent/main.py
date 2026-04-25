@@ -5,7 +5,7 @@ Boots all modules in order:
   1. Load policy
   2. Initialize audit store
   3. Register all signal extractors on event bus
-  4. Start capture loop
+  4. Start webcam capture loop
   5. Start risk engine emission loop
   6. Start FastAPI server
 """
@@ -32,6 +32,16 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("deepshield")
+
+# ── File logger: logs/system_validation.log ───────────────────────────────────
+_LOG_DIR = Path("logs")
+_LOG_DIR.mkdir(exist_ok=True)
+_fh = logging.FileHandler(_LOG_DIR / "system_validation.log", encoding="utf-8")
+_fh.setLevel(logging.INFO)
+_fh.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"
+))
+logging.getLogger().addHandler(_fh)
 
 
 def parse_args() -> argparse.Namespace:
@@ -153,6 +163,7 @@ async def main_async(args: argparse.Namespace) -> None:
     )
     risk_engine.register()
 
+    # ── Webcam capture ────────────────────────────────────────────────────────
     from agent.capture.webcam import CaptureSource
 
     capture = CaptureSource(
@@ -161,8 +172,9 @@ async def main_async(args: argparse.Namespace) -> None:
         video_path=args.demo,
         target_fps=30,
     )
+    logger.info(f"Capture source: WEBCAM (device={args.device})")
 
-    # ── Optional ML data logger ──
+    # ── Optional ML data logger ───────────────────────────────────────────────
     ml_logger = None
     if getattr(args, "record_ml_data", False):
         from agent.ml.logger import MLDataLogger
@@ -177,17 +189,17 @@ async def main_async(args: argparse.Namespace) -> None:
         ml_logger.start()
         logger.info("ML data recording enabled (--record-ml-data)")
 
-    # ── GRU real-time inference engine (always active, fails gracefully) ──
+    # ── GRU real-time inference engine ────────────────────────────────────────
     from agent.ml.inference import GRUInferenceEngine
 
     gru_engine = GRUInferenceEngine(
-        model_path=Path("models/gru_refined_v3.pt"),   # v3: balanced split, thr=0.45
+        model_path=Path("models/gru_refined_v3.pt"),
         npz_path=Path("data/sequences.npz"),
     )
     gru_engine.register()
     logger.info("GRU inference engine registered")
 
-    # ── CNN visual inference engine (parallel to GRU, non-blocking) ──
+    # ── CNN visual inference engine ───────────────────────────────────────────
     from agent.ml.cnn_inference import CNNInferenceEngine
 
     cnn_engine = CNNInferenceEngine(
@@ -196,16 +208,16 @@ async def main_async(args: argparse.Namespace) -> None:
     cnn_engine.register()
     logger.info("CNN inference engine registered")
 
-    # ── Deepfake engine (Xception — triggered on elevated suspicion) ──
+    # ── Deepfake engine (EfficientNet / Xception) ─────────────────────────────
     from agent.ml.deepfake_inference import DeepfakeInferenceEngine
 
     deepfake_engine = DeepfakeInferenceEngine(
-        weights_path=Path("models/deepfake_xception.pkl"),
+        weights_path=Path("models/legacy_deepfake_xception.pkl"),  # fallback only
     )
     deepfake_engine.register()
     logger.info("Deepfake engine registered")
 
-    # ── Fusion engine (GRU + CNN + Deepfake 3-signal decision layer) ──
+    # ── Fusion engine (GRU + CNN + Deepfake) ─────────────────────────────────
     from agent.ml.fusion_engine import FusionEngine
 
     fusion_engine = FusionEngine(
@@ -216,7 +228,7 @@ async def main_async(args: argparse.Namespace) -> None:
     fusion_engine.register()
     logger.info("Fusion engine registered (3-signal: GRU + CNN + Deepfake)")
 
-    # ── Optional debug overlay ──
+    # ── Optional debug overlay ────────────────────────────────────────────────
     debug_ui = None
     if getattr(args, "debug_ui", False):
         from agent.debug_ui import DebugUI
@@ -231,7 +243,6 @@ async def main_async(args: argparse.Namespace) -> None:
         )
         debug_ui.register()
         logger.info("Debug UI enabled (--debug-ui)")
-
 
     from agent.api.server import app as api_app
     from agent.api.server import register_handlers, set_audit_store
@@ -251,10 +262,10 @@ async def main_async(args: argparse.Namespace) -> None:
     uvicorn_server = uvicorn.Server(uvicorn_config)
 
     tasks = [
-        asyncio.create_task(capture.run(), name="capture"),
-        asyncio.create_task(risk_engine.run(), name="risk-engine"),
+        asyncio.create_task(capture.run(),          name="capture"),
+        asyncio.create_task(risk_engine.run(),      name="risk-engine"),
         asyncio.create_task(uvicorn_server.serve(), name="uvicorn"),
-        asyncio.create_task(_run_ui_pump(app), name="overlay-ui"),
+        asyncio.create_task(_run_ui_pump(app),      name="overlay-ui"),
     ]
     if debug_ui is not None:
         tasks.append(asyncio.create_task(debug_ui.run(), name="debug-ui"))
