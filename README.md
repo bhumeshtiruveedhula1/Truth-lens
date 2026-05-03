@@ -1,4 +1,4 @@
-# 🧠 TruthLens — Real-Time AI Trust & Deepfake Detection System
+# 🧠 DEEPSHEILD — Real-Time AI Trust & Deepfake Detection System
 
 > **A multi-layer intelligent system that verifies human authenticity in real-time and defends against deepfake, replay, and injection attacks.**
 
